@@ -1,0 +1,42 @@
+# Environment & secrets
+.env
+.env.local
+.env.example
+
+# Virtual environments
+venv/
+*.venv/
+env/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyc
+*.egg-info/
+*.egg
+dist/
+build/
+*.whl
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Local venv (project level)
+job-application-agent/venv/  # old local venv from project
+
+# Logs
+*.log
+logs/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Secrets / keys
+*.pem
+*.key
+credentials.json
