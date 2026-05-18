@@ -36,6 +36,8 @@ JDAnalyzerAgent = _import_agent("jd_analyzer").JDAnalyzerAgent
 MatchMakerAgent = _import_agent("match_maker").MatchMakerAgent
 InterviewCoachAgent = _import_agent("interview_coach").InterviewCoachAgent
 CoverLetterAgent = _import_agent("cover_letter_agent").CoverLetterAgent
+JDScraperAgent = _import_agent("jd_scraper_agent").JDScraperAgent
+LinkedInScraperAgent = _import_agent("linkedin_scraper_agent").LinkedInScraperAgent
 
 
 class JobMindCrew:
@@ -70,6 +72,8 @@ class JobMindCrew:
         """
         self.resume_analyzer = ResumeAnalyzerAgent(self.llm)
         self.jd_analyzer = JDAnalyzerAgent(self.llm)
+        self.jd_scraper = JDScraperAgent(self.llm)
+        self.linkedin_scraper = LinkedInScraperAgent(self.llm)
         self.match_maker = MatchMakerAgent(self.llm)
         self.interview_coach = InterviewCoachAgent(self.llm)
         self.cover_letter_agent = CoverLetterAgent(self.llm)

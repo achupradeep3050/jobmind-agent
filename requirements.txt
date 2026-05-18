@@ -1,23 +1,24 @@
-# JobMind - AI Job Application & Interview Prep Agent
+# JobMind 2.0 - AI Job Application & Interview Prep Agent
 # Core dependencies
 
 # Web Framework
 streamlit>=1.28.0
 
-# Multi-Agent Framework (using available version)
+# Multi-Agent Framework
 crewai>=0.5.0,<1.0.0
 
-# LLM Integration (for CrewAI compatibility)
+# LLM Integration (BlackBox/Kimi via litellm)
 litellm>=1.0.0
 
 # Environment Variable Management
 python-dotenv>=1.0.0
 
-# Standard Library Enhancements (usually built-in)
-# - re (regular expressions)
-# - datetime (built-in)
+# Web Scraping - ScrapeGraphAI (local repo, no pip needed)
+# Point SCRAPEGRAPH_REPO=~/Scrapegraph-ai in your shell
 
-# Development/Testing (optional)
-# pytest>=7.0.0
-# black>=23.0.0
-# flake8>=6.0.0
+# Browser Automation (LinkedIn scraping via authenticated session)
+playwright>=1.40.0
+# Install browsers: python -m playwright install chromium
+
+# Standard Library
+# re, datetime, asyncio (built-in)

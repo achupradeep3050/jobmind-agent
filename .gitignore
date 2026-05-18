@@ -40,3 +40,6 @@ Thumbs.db
 *.pem
 *.key
 credentials.json
+
+# Personal configuration (contains PII)
+config/profile.yml

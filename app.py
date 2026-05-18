@@ -1,573 +1,449 @@
 """
-JobMind - AI Job Application & Interview Prep Agent
-Main Streamlit Application
-
-This app takes a resume and job description as input, analyzes skills match,
-identifies gaps, generates interview questions with model answers, and
-optionally generates cover letters.
+JobMind 2.0 — Unified AI Job Application Agent
+Full pipeline: LinkedIn job search → JD extraction → Match analysis → CV generation → Interview prep
+Powered by Kimi (BlackBox) + CrewAI + ScrapeGraphAI + LinkedIn session
 """
 
 import streamlit as st
 import os
 import sys
+import asyncio
 from datetime import datetime
+from io import BytesIO
 
-# Add src to path for imports
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "src"))
 
-# Import configuration
 import config
+from crew.crew_setup import create_crew, JobMindCrew
+from linkedin.client import LinkedInClient
 
-# Import crew setup
-from crew.crew_setup import JobMindCrew, create_crew
-
-
-# ============================================================================
-# PAGE CONFIGURATION
-# ============================================================================
+# ── Resume extraction helpers ──────────────────────────────────────────────────
+def extract_resume_text(uploaded_file) -> str:
+    """Extract text from uploaded PDF or DOCX file."""
+    fname = uploaded_file.name.lower()
+    try:
+        if fname.endswith(".pdf"):
+            from pypdf import PdfReader
+            reader = PdfReader(BytesIO(uploaded_file.read()))
+            return "\n".join(page.extract_text() or "" for page in reader.pages)
+        elif fname.endswith((".docx", ".doc")):
+            from docx import Document
+            doc = Document(BytesIO(uploaded_file.read()))
+            return "\n".join(p.text for p in doc.paragraphs if p.text.strip())
+        else:
+            return uploaded_file.read().decode("utf-8", errors="replace")
+    except Exception as e:
+        return f"[Could not extract text from {fname}: {e}]"
 
 st.set_page_config(
-    page_title=config.APP_TITLE,
-    page_icon=config.APP_ICON,
+    page_title="JobMind 2.0 — AI Job Agent",
+    page_icon="🎯",
     layout="wide",
-    initial_sidebar_state="collapsed"
+    initial_sidebar_state="expanded"
 )
 
-# Apply custom dark theme styling
+# ── Dark theme styles ──────────────────────────────────────────────────────────
 st.markdown("""
 <style>
-    /* Main background */
-    .stApp {
-        background: linear-gradient(135deg, #0F172A 0%, #1E293B 100%);
-    }
-    
-    /* Headers */
-    h1, h2, h3 {
-        color: #F1F5F9 !important;
-    }
-    
-    /* Cards and containers */
-    .analysis-card {
-        background: rgba(30, 41, 59, 0.8);
-        border-radius: 12px;
-        padding: 20px;
-        margin: 10px 0;
-        border: 1px solid rgba(99, 102, 241, 0.3);
-    }
-    
-    /* Match score styling */
-    .match-excellent { color: #22C55E; font-weight: bold; }
-    .match-good { color: #84CC16; font-weight: bold; }
-    .match-moderate { color: #FBBF24; font-weight: bold; }
-    .match-poor { color: #EF4444; font-weight: bold; }
-    
-    /* Section headers */
-    .section-header {
-        color: #6366F1 !important;
-        border-bottom: 2px solid #6366F1;
-        padding-bottom: 8px;
-        margin-bottom: 16px;
-    }
-    
-    /* Success/Info boxes */
-    .success-box {
-        background: rgba(34, 197, 94, 0.15);
-        border-left: 4px solid #22C55E;
-        padding: 12px;
-        border-radius: 4px;
-        margin: 10px 0;
-    }
-    
-    .info-box {
-        background: rgba(99, 102, 241, 0.15);
-        border-left: 4px solid #6366F1;
-        padding: 12px;
-        border-radius: 4px;
-        margin: 10px 0;
-    }
-    
-    /* Text input styling */
-    .stTextArea textarea {
-        background: rgba(15, 23, 42, 0.9) !important;
-        color: #F1F5F9 !important;
-        border: 1px solid rgba(99, 102, 241, 0.4) !important;
-        border-radius: 8px !important;
-    }
-    
-    /* Button styling */
-    .stButton > button {
-        background: linear-gradient(135deg, #6366F1 0%, #8B5CF6 100%);
-        color: white !important;
-        border: none;
-        border-radius: 8px;
-        padding: 12px 24px;
-        font-weight: 600;
-        transition: all 0.3s ease;
-    }
-    
-    .stButton > button:hover {
-        transform: translateY(-2px);
-        box-shadow: 0 4px 12px rgba(99, 102, 241, 0.4);
-    }
-    
-    /* Tab styling */
-    .stTabs [data-baseweb="tab-list"] {
-        gap: 8px;
-        background: rgba(15, 23, 42, 0.5);
-        padding: 8px;
-        border-radius: 12px;
-    }
-    
-    .stTabs [data-baseweb="tab"] {
-        background: transparent;
-        border-radius: 8px;
-        padding: 8px 16px;
-        color: #94A3B8;
-    }
-    
-    .stTabs [aria-selected="true"] {
-        background: rgba(99, 102, 241, 0.3) !important;
-        color: #F1F5F9 !important;
-    }
-    
-    /* Progress bar */
-    .stProgress > div > div {
-        background: linear-gradient(90deg, #6366F1, #8B5CF6);
-    }
-    
-    /* Scrollbar styling */
-    ::-webkit-scrollbar {
-        width: 8px;
-        height: 8px;
-    }
-    
-    ::-webkit-scrollbar-track {
-        background: rgba(15, 23, 42, 0.5);
-    }
-    
-    ::-webkit-scrollbar-thumb {
-        background: rgba(99, 102, 241, 0.5);
-        border-radius: 4px;
-    }
-    
-    /* Download button */
-    .download-btn {
-        background: rgba(34, 197, 94, 0.2) !important;
-        border: 1px solid #22C55E !important;
-        color: #22C55E !important;
-    }
+.stApp { background: linear-gradient(135deg, #0F172A 0%, #1E293B 100%); }
+h1, h2, h3 { color: #F1F5F9 !important; }
+.analysis-card {
+    background: rgba(30, 41, 59, 0.8);
+    border-radius: 12px; padding: 20px; margin: 10px 0;
+    border: 1px solid rgba(99, 102, 241, 0.3);
+}
+.match-excellent { color: #22C55E; font-weight: bold; }
+.match-good { color: #84CC16; font-weight: bold; }
+.match-moderate { color: #FBBF24; font-weight: bold; }
+.match-poor { color: #EF4444; font-weight: bold; }
+.section-header { color: #6366F1 !important; border-bottom: 2px solid #6366F1; padding-bottom: 8px; margin-bottom: 16px; }
+.success-box { background: rgba(34, 197, 94, 0.15); border-left: 4px solid #22C55E; padding: 12px; border-radius: 4px; margin: 10px 0; }
+.info-box { background: rgba(99, 102, 241, 0.15); border-left: 4px solid #6366F1; padding: 12px; border-radius: 4px; margin: 10px 0; }
+.stTextArea textarea {
+    background: rgba(15, 23, 42, 0.9) !important;
+    color: #F1F5F9 !important;
+    border: 1px solid rgba(99, 102, 241, 0.4) !important;
+    border-radius: 8px !important;
+}
+.stButton > button {
+    background: linear-gradient(135deg, #6366F1 0%, #8B5CF6 100%);
+    color: white !important; border: none; border-radius: 8px;
+    padding: 12px 24px; font-weight: 600; transition: all 0.3s ease;
+}
+.stButton > button:hover { transform: translateY(-2px); box-shadow: 0 4px 12px rgba(99, 102, 241, 0.4); }
+.stTabs [data-baseweb="tab-list"] { gap: 8px; background: rgba(15, 23, 42, 0.5); padding: 8px; border-radius: 12px; }
+.stTabs [data-baseweb="tab"] { background: transparent; border-radius: 8px; padding: 8px 16px; color: #94A3B8; }
+.stTabs [aria-selected="true"] { background: rgba(99, 102, 241, 0.3) !important; color: #F1F5F9 !important; }
+::-webkit-scrollbar { width: 8px; }
+::-webkit-scrollbar-track { background: rgba(15, 23, 42, 0.5); }
+::-webkit-scrollbar-thumb { background: rgba(99, 102, 241, 0.5); border-radius: 4px; }
 </style>
 """, unsafe_allow_html=True)
 
-
-# ============================================================================
-# HELPER FUNCTIONS
-# ============================================================================
-
+# ── Helpers ────────────────────────────────────────────────────────────────────
 def check_api_key() -> bool:
-    """
-    Check if OpenAI API key is configured.
-    
-    Returns:
-        bool: True if API key is present, False otherwise
-    """
-    api_key = os.getenv("OPENAI_API_KEY", "").strip()
-    return bool(api_key)
+    return bool(os.getenv("BLACKBOX_API_KEY", "").strip())
 
-
-def parse_match_score(match_text: str) -> int:
-    """
-    Try to extract a numeric match score from the match analysis text.
-    
-    Args:
-        match_text: The match analysis text
-        
-    Returns:
-        int: Match score percentage (0-100), or 0 if not found
-    """
+def parse_match_score(text: str) -> int:
     import re
-    
-    # Look for patterns like "XX/100" or "XX%" or "XX percent"
-    patterns = [
-        r'(\d+)/100',
-        r'(\d+)%',
-        r'match[:\s]+(\d+)',
-        r'score[:\s]+(\d+)',
-    ]
-    
-    for pattern in patterns:
-        match = re.search(pattern, match_text, re.IGNORECASE)
-        if match:
-            score = int(match.group(1))
-            if 0 <= score <= 100:
-                return score
-    
-    return 0  # Default if no score found
+    for pat in [r"(\d+)/100", r"(\d+)%", r"match[:\s]+(\d+)", r"score[:\s]+(\d+)"]:
+        m = re.search(pat, text, re.IGNORECASE)
+        if m:
+            v = int(m.group(1))
+            if 0 <= v <= 100:
+                return v
+    return 0
 
+def score_class(score: int) -> str:
+    if score >= 80: return "match-excellent"
+    elif score >= 60: return "match-good"
+    elif score >= 40: return "match-moderate"
+    return "match-poor"
 
-def get_match_class(score: int) -> str:
-    """
-    Get CSS class for match score display.
-    
-    Args:
-        score: Match percentage
-        
-    Returns:
-        str: CSS class name
-    """
-    if score >= 80:
-        return "match-excellent"
-    elif score >= 60:
-        return "match-good"
-    elif score >= 40:
-        return "match-moderate"
-    else:
-        return "match-poor"
-
-
-def format_results_for_export(results: dict) -> str:
-    """
-    Format all results into a single text blob for export.
-    
-    Args:
-        results: Dictionary containing all analysis results
-        
-    Returns:
-        str: Formatted text ready for file export
-    """
-    export_text = f"""
+def fmt_results(results: dict) -> str:
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M")
+    return f"""
 ================================================================================
-                        JobMind Analysis Report
-                    Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}
+                    JobMind 2.0 — Analysis Report
+                            {ts}
 ================================================================================
 
-================================================================================
-                         RESUME ANALYSIS
-================================================================================
+RESUME ANALYSIS
 {results.get('resume_analysis', 'N/A')}
 
-================================================================================
-                      JOB DESCRIPTION ANALYSIS
-================================================================================
+JOB DESCRIPTION ANALYSIS
 {results.get('jd_analysis', 'N/A')}
 
-================================================================================
-                          MATCH ANALYSIS
-================================================================================
+MATCH ANALYSIS
 {results.get('match_analysis', 'N/A')}
 
-================================================================================
-                       INTERVIEW PREPARATION
-================================================================================
+INTERVIEW PREPARATION
 {results.get('interview_prep', 'N/A')}
 
-================================================================================
-                            COVER LETTER
-================================================================================
+COVER LETTER
 {results.get('cover_letter', 'Not generated')}
-
-================================================================================
-                               END OF REPORT
 ================================================================================
 """
-    return export_text.strip()
 
+# ── Session state ──────────────────────────────────────────────────────────────
+def init_state():
+    defaults = {
+        "results": None,
+        "resume_text": "",
+        "jd_text": "",
+        "linkedin_jobs": [],
+        "selected_job": None,
+        "analysis_complete": False,
+        "job_search_done": False,
+    }
+    for k, v in defaults.items():
+        if k not in st.session_state:
+            st.session_state[k] = v
 
-# ============================================================================
-# SESSION STATE INITIALIZATION
-# ============================================================================
+init_state()
 
-def init_session_state():
-    """
-    Initialize Streamlit session state variables if they don't exist.
-    Used to persist data across tab switches and reruns.
-    """
-    if "results" not in st.session_state:
-        st.session_state.results = None
-    if "resume_text" not in st.session_state:
-        st.session_state.resume_text = ""
-    if "jd_text" not in st.session_state:
-        st.session_state.jd_text = ""
-    if "analysis_complete" not in st.session_state:
-        st.session_state.analysis_complete = False
-    if "error_message" not in st.session_state:
-        st.session_state.error_message = None
+# ── Sidebar navigation ─────────────────────────────────────────────────────────
+st.sidebar.markdown("### 🎯 JobMind 2.0")
+mode = st.sidebar.radio("Mode", [
+    "🤖 Analyze Application",
+    "🔍 LinkedIn Job Search",
+    "📋 Application Tracker",
+    "💼 Pipeline (URL Inbox)",
+    "👤 LinkedIn Profile",
+])
 
+st.sidebar.markdown("---")
+st.sidebar.markdown("**Stack:** Kimi · CrewAI · ScrapeGraphAI · LinkedIn")
 
-# ============================================================================
-# MAIN APPLICATION LAYOUT
-# ============================================================================
+# ══════════════════════════════════════════════════════════════════════════════
+# MODE 1: ANALYZE APPLICATION
+# ══════════════════════════════════════════════════════════════════════════════
+if mode == "🤖 Analyze Application":
+    st.markdown("# 🤖 JobMind — Analyze Application")
+    st.markdown("*Paste your resume + job description to get match score, interview prep & cover letter*")
 
-def main():
-    """Main application entry point."""
-    
-    init_session_state()
-    
-    # Header section
-    st.markdown(f"""
-    # 🎯 {config.APP_TITLE.split('—')[0]}
-    *{config.APP_TITLE.split('—')[1] if '—' in config.APP_TITLE else ''}*
-    """)
-    
-    st.markdown(config.APP_DESCRIPTION)
-    
-    # API Key Warning
     if not check_api_key():
-        st.error("""
-        ### ⚠️ OpenAI API Key Required
-        
-        Please configure your `.env` file with a valid OpenAI API key:
-        ```
-        OPENAI_API_KEY=sk-your-key-here
-        ```
-        
-        Get your API key at: [OpenAI Platform](https://platform.openai.com/api-keys)
-        
-        ⚠️ Without an API key, the analysis features will not work.
-        """)
+        st.error("⚠️ Missing `BLACKBOX_API_KEY` — set it in `.env.local`")
         st.stop()
-    
-    # ===== THREE-COLUMN INPUT LAYOUT =====
-    st.markdown("---")
-    st.markdown("### 📥 Input Your Information")
-    
+
     col1, col2, col3 = st.columns([1, 1, 1.2])
-    
+
     with col1:
         st.markdown("#### 📄 Resume")
-        resume_text = st.text_area(
-            label="Paste your resume",
-            placeholder="Paste your resume text here...\n\nExample:\nJohn Doe\njohn@email.com\n\nSummary: Experienced software engineer...\n\nSkills: Python, JavaScript, SQL...",
-            height=400,
-            key="resume_input"
+        st.markdown("**Upload your resume — PDF or Word accepted**")
+        resume_file = st.file_uploader(
+            "Drag & drop or browse",
+            type=["pdf", "docx", "doc"],
+            key="resume_upload",
+            help="PDF or Word document will be automatically extracted"
         )
-        st.session_state.resume_text = resume_text
-    
+        if resume_file:
+            with st.spinner("Extracting text..."):
+                resume_text = extract_resume_text(resume_file)
+                st.session_state["resume_text"] = resume_text
+                st.session_state["resume_filename"] = resume_file.name
+            char_count = len(resume_text)
+            st.success(f"✅ Extracted {char_count:,} characters from `{resume_file.name}`")
+            with st.expander("📋 Preview extracted text"):
+                st.text(resume_text[:2000] + ("..." if char_count > 2000 else ""))
+        else:
+            resume_text = st.text_area(
+                "Or paste resume text",
+                placeholder="Name, Summary, Skills, Experience...",
+                height=380, key="resume_paste_fallback"
+            )
     with col2:
         st.markdown("#### 📋 Job Description")
-        jd_text = st.text_area(
-            label="Paste job description",
-            placeholder="Paste the job description here...\n\nExample:\nSoftware Engineer\n\nRequirements:\n- 3+ years experience\n- Proficiency in Python...\n\nResponsibilities:\n- Develop web applications...",
-            height=400,
-            key="jd_input"
-        )
-        st.session_state.jd_text = jd_text
-    
+        jd_options = ["Paste JD text", "Extract from URL (ScrapeGraphAI)"]
+        jd_mode = st.radio("Input method", jd_options, key="jd_mode")
+
+        if jd_mode == "Paste JD text":
+            jd_text = st.text_area(
+                "Paste job description",
+                placeholder="Paste the full job description here...",
+                height=400, key="jd_paste"
+            )
+        else:
+            jd_url = st.text_input("Job posting URL", placeholder="https://...", key="jd_url")
+            jd_text = st.text_area(
+                "Or paste JD text directly",
+                placeholder="Alternatively paste text here...",
+                height=300, key="jd_alt"
+            )
+            if jd_url and not jd_text:
+                with st.spinner("🔄 Extracting JD with ScrapeGraphAI..."):
+                    try:
+                        from linkedin.scrape_utils import extract_jd_with_scrapegraph
+                        jd_text = extract_jd_with_scrapegraph(jd_url)
+                        st.session_state["jd_paste"] = jd_text
+                        st.success(f"✅ Extracted JD ({len(jd_text)} chars)")
+                    except Exception as e:
+                        st.warning(f"ScrapeGraphAI failed: {e} — paste manually")
+
     with col3:
         st.markdown("#### ⚙️ Options")
-        
-        analysis_mode = st.radio(
-            "Analysis Depth",
-            options=["Quick Match", "Full Analysis"],
-            index=1,
-            help="Quick Match: Fast analysis of skills match only.\nFull Analysis: Complete analysis + interview prep + cover letter."
-        )
-        
-        include_cover_letter = st.checkbox(
-            "Generate Cover Letter",
-            value=True,
-            help="Generate a personalized cover letter based on your resume and the job"
-        )
-        
-        candidate_name = st.text_input(
-            "Your Name",
-            placeholder="John Doe",
-            help="Used for personalized cover letter"
-        )
-        
+        include_cover = st.checkbox("Generate Cover Letter", True, key="cover_opt")
+        candidate_name = st.text_input("Your Name", placeholder="Your Name", key="cname")
         st.markdown("---")
-        
-        # Analyze Button
-        analyze_button = st.button(
-            "🚀 Analyze Application",
-            use_container_width=True,
-            help="Click to start the analysis"
-        )
-    
-    # ===== RUN ANALYSIS =====
-    if analyze_button:
+        analyze_btn = st.button("🚀 Analyze Application", use_container_width=True)
+
+    if analyze_btn:
         if not resume_text.strip():
-            st.error("📄 Please enter your resume text.")
-            return
-        if not jd_text.strip():
-            st.error("📋 Please enter the job description.")
-            return
-        
-        # Run analysis
-        with st.spinner("🔄 Initializing analysis agents..."):
+            st.error("📄 Please enter resume text")
+            st.stop()
+        effective_jd = jd_text.strip()
+        if not effective_jd:
+            st.error("📋 Please enter or extract a job description")
+            st.stop()
+
+        with st.spinner("Initializing crew..."):
             try:
                 crew = create_crew()
-                
-                # Progress tracking
-                progress_bar = st.progress(0)
-                status_text = st.empty()
-                
-                # Run full analysis
+                pb = st.progress(0)
+                status = st.empty()
                 results = {}
-                
-                # Step 1: Resume Analysis
-                status_text.text("🔍 Analyzing resume...")
-                progress_bar.progress(20)
+
+                steps = [
+                    ("Analyzing resume...", 20),
+                    ("Parsing job description...", 40),
+                    ("Calculating match...", 60),
+                    ("Generating interview questions...", 80),
+                    ("Drafting cover letter...", 95),
+                ]
+                for step, pct in steps:
+                    status.text(f"🔍 {step}")
+                    pb.progress(pct)
+
                 results["resume_analysis"] = crew.resume_analyzer.analyze(resume_text)
-                
-                # Step 2: JD Analysis
-                status_text.text("📋 Analyzing job description...")
-                progress_bar.progress(40)
-                results["jd_analysis"] = crew.jd_analyzer.analyze(jd_text)
-                
-                # Step 3: Match Analysis
-                status_text.text("🎯 Calculating match analysis...")
-                progress_bar.progress(60)
+                results["jd_analysis"] = crew.jd_analyzer.analyze(effective_jd)
                 results["match_analysis"] = crew.match_maker.analyze_match(
-                    resume_analysis=results["resume_analysis"],
-                    jd_analysis=results["jd_analysis"],
-                    original_resume=resume_text,
-                    original_jd=jd_text
+                    results["resume_analysis"], results["jd_analysis"],
+                    resume_text, effective_jd
                 )
-                
-                # Step 4: Interview Prep
-                status_text.text("💬 Generating interview questions...")
-                progress_bar.progress(80)
                 results["interview_prep"] = crew.interview_coach.generate_interview_prep(
-                    resume_analysis=results["resume_analysis"],
-                    jd_analysis=results["jd_analysis"],
-                    match_analysis=results["match_analysis"]
+                    results["resume_analysis"], results["jd_analysis"], results["match_analysis"]
                 )
-                
-                # Step 5: Cover Letter (optional)
-                if include_cover_letter:
-                    status_text.text("✍️ Drafting cover letter...")
-                    progress_bar.progress(90)
+                if include_cover:
                     results["cover_letter"] = crew.cover_letter_agent.generate_cover_letter(
-                        resume_analysis=results["resume_analysis"],
-                        jd_analysis=results["jd_analysis"],
-                        match_analysis=results["match_analysis"],
-                        candidate_name=candidate_name or "Candidate"
+                        results["resume_analysis"], results["jd_analysis"], results["match_analysis"],
+                        candidate_name or "Candidate"
                     )
                 else:
                     results["cover_letter"] = None
-                
-                progress_bar.progress(100)
-                status_text.text("✅ Analysis complete!")
-                
-                # Store results
+
+                pb.progress(100)
+                status.text("✅ Done!")
                 st.session_state.results = results
                 st.session_state.analysis_complete = True
-                
-                st.success("🎉 Analysis complete! Check the Results tab below.")
-                
-            except ValueError as e:
-                st.error(str(e))
-                return
+                st.success("🎉 Analysis complete!")
+
             except Exception as e:
-                st.error(f"❌ Analysis failed: {str(e)}")
-                return
-    
-    # ===== DISPLAY RESULTS =====
+                st.error(f"❌ Error: {e}")
+                st.stop()
+
     if st.session_state.analysis_complete and st.session_state.results:
-        st.markdown("---")
-        st.markdown("### 📊 Analysis Results")
-        
         results = st.session_state.results
-        
-        # Create tabs for organized display
-        tab1, tab2, tab3, tab4 = st.tabs([
-            "🎯 Match Analysis",
-            "📄 Full Report",
-            "💬 Interview Prep",
-            "✍️ Cover Letter"
-        ])
-        
-        with tab1:
-            st.markdown("### Match Analysis")
-            
-            # Extract and display match score prominently
-            match_score = parse_match_score(results.get("match_analysis", ""))
-            if match_score > 0:
-                score_col1, score_col2, score_col3 = st.columns([1, 2, 1])
-                with score_col2:
-                    st.metric(
-                        label="Overall Match Score",
-                        value=f"{match_score}%",
-                        delta="Candidate fit for this role"
-                    )
-                    
-                    # Visual progress bar for score
-                    st.progress(match_score / 100, text=f"Match Score: {match_score}/100")
-            
-            # Display match analysis text
-            st.markdown(results.get("match_analysis", "No match analysis available."))
-        
-        with tab2:
-            st.markdown("### Complete Analysis Report")
-            
-            # Resume Analysis
-            st.markdown("#### 📄 Resume Analysis")
-            st.markdown(results.get("resume_analysis", "N/A"))
-            
-            st.markdown("---")
-            
-            # JD Analysis
-            st.markdown("#### 📋 Job Description Analysis")
-            st.markdown(results.get("jd_analysis", "N/A"))
-            
-            st.markdown("---")
-            
-            # Match Analysis
-            st.markdown("#### 🎯 Match Analysis")
-            st.markdown(results.get("match_analysis", "N/A"))
-        
-        with tab3:
-            st.markdown("### 💬 Interview Preparation")
-            st.markdown(results.get("interview_prep", "No interview preparation available."))
-        
-        with tab4:
-            if results.get("cover_letter"):
-                st.markdown("### ✍️ Cover Letter")
-                
-                # Copy button
-                st.code(results["cover_letter"], language=None)
-                
-                st.download_button(
-                    label="📥 Download Cover Letter",
-                    data=results["cover_letter"],
-                    file_name="cover_letter.txt",
-                    mime="text/plain",
-                    help="Download the cover letter as a text file"
-                )
-            else:
-                st.info("ℹ️ Cover letter generation was skipped. Enable it in the options to generate one.")
-        
-        # Export options
+        score = parse_match_score(results.get("match_analysis", ""))
+        sc = score_class(score)
+
         st.markdown("---")
-        export_col1, export_col2 = st.columns(2)
-        
-        with export_col1:
-            full_report = format_results_for_export(results)
-            st.download_button(
-                label="📥 Download Full Report",
-                data=full_report,
-                file_name=f"jobmind_report_{datetime.now().strftime('%Y%m%d_%H%M')}.txt",
-                mime="text/plain",
-                help="Export all analysis results as a text file"
-            )
-        
-        with export_col2:
-            st.caption(f"Report generated at: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
-    
-    # Footer
+        st.markdown("## 📊 Results")
+        t1, t2, t3, t4 = st.tabs(["🎯 Match", "📄 Report", "💬 Interview Prep", "✍️ Cover Letter"])
+
+        with t1:
+            if score > 0:
+                st.metric("Overall Match Score", f"{score}%", delta="Candidate fit")
+                st.progress(score / 100, text=f"{score}/100")
+                cls_col = st.columns([1, 2, 1])
+                with cls_col[1]:
+                    st.markdown(f'<p class="{sc}">{score}% match</p>', unsafe_allow_html=True)
+            st.markdown(results.get("match_analysis", "N/A"))
+
+        with t2:
+            st.markdown(results.get("resume_analysis", ""))
+            st.markdown("---")
+            st.markdown(results.get("jd_analysis", ""))
+
+        with t3:
+            st.markdown(results.get("interview_prep", ""))
+
+        with t4:
+            if results.get("cover_letter"):
+                st.markdown(results["cover_letter"])
+                st.download_button(
+                    "📥 Download Cover Letter",
+                    results["cover_letter"],
+                    file_name="cover_letter.txt",
+                    mime="text/plain"
+                )
+
+# ══════════════════════════════════════════════════════════════════════════════
+# MODE 2: LINKEDIN JOB SEARCH
+# ══════════════════════════════════════════════════════════════════════════════
+elif mode == "🔍 LinkedIn Job Search":
+    st.markdown("# 🔍 LinkedIn Job Search")
+    st.markdown("*Search LinkedIn jobs using your authenticated session*")
+
+    if not check_api_key():
+        st.error("⚠️ Missing BLACKBOX_API_KEY")
+        st.stop()
+
+    keywords = st.text_input(
+        "Keywords",
+        value="DevOps Engineer SRE Python",
+        help="Job titles or skills to search for"
+    )
+    location = st.text_input("Location", value="India")
+
+    col_kw1, col_kw2 = st.columns(2)
+    with col_kw1:
+        quick_searches = [
+            "DevOps Engineer Python India",
+            "SRE Site Reliability Engineer India",
+            "Python Developer AWS Kubernetes",
+            "Platform Engineer CI/CD",
+            "AI ML Engineer LLM",
+        ]
+        for qs in quick_searches:
+            if st.button(qs, key=f"qs_{qs[:15]}"):
+                keywords = qs
+
+    if st.button("🔍 Search LinkedIn Jobs", use_container_width=True):
+        with st.spinner("Searching LinkedIn via browser session..."):
+            try:
+                jobs = asyncio.run(
+                    LinkedInClient().search_jobs(keywords, location, limit=30)
+                )
+                st.session_state.linkedin_jobs = jobs
+                st.session_state.job_search_done = True
+            except Exception as e:
+                st.error(f"Search failed: {e}")
+
+    if st.session_state.job_search_done and st.session_state.linkedin_jobs:
+        jobs = st.session_state.linkedin_jobs
+        st.success(f"Found {len(jobs)} job listings")
+
+        # Build table
+        import pandas as pd
+        rows = []
+        for j in jobs:
+            rows.append({
+                "Title": j.get("title","")[:80],
+                "Company": j.get("company","")[:50],
+                "Location": j.get("location",""),
+                "Posted": j.get("posted",""),
+            })
+        df = pd.DataFrame(rows)
+        st.dataframe(df, use_container_width=True, hide_index=True)
+
+        st.markdown("**To evaluate any job:** copy the job title + company, go to 'Analyze Application', and paste the details.")
+
+# ══════════════════════════════════════════════════════════════════════════════
+# MODE 3: APPLICATION TRACKER
+# ══════════════════════════════════════════════════════════════════════════════
+elif mode == "📋 Application Tracker":
+    st.markdown("# 📋 Applications Tracker")
+    tracker_path = os.path.join(os.path.dirname(__file__), "data/applications.md")
+
+    if os.path.exists(tracker_path):
+        with open(tracker_path) as f:
+            st.markdown(f.read())
+    else:
+        st.info("No applications tracked yet. Analyze a job to start!")
+
     st.markdown("---")
-    st.markdown("""
-    <div style="text-align: center; color: #64748B; font-size: 12px;">
-    Built with ❤️ using Streamlit + CrewAI<br>
-    Powered by OpenAI GPT-4o
-    </div>
-    """, unsafe_allow_html=True)
+    st.markdown("**Add new application:**")
+    nc1, nc2, nc3, nc4, nc5 = st.columns(5)
+    with nc1: new_company = st.text_input("Company")
+    with nc2: new_role = st.text_input("Role")
+    with nc3: new_score = st.selectbox("Score", ["5/5","4/5","3/5","2/5","1/5"])
+    with nc4: new_status = st.selectbox("Status", ["Evaluated","Applied","Interviewing","Offer","Rejected"])
+    with nc5: st.markdown("<br>", unsafe_allow_html=True)
+    if st.button("➕ Add to Tracker"):
+        st.success("Added! (Tracker updates coming soon)")
 
+# ══════════════════════════════════════════════════════════════════════════════
+# MODE 4: PIPELINE
+# ══════════════════════════════════════════════════════════════════════════════
+elif mode == "💼 Pipeline (URL Inbox)":
+    st.markdown("# 💼 Pipeline — URL Inbox")
+    st.markdown("*Add job URLs here, then run full evaluation pipeline*")
+    pipeline_path = os.path.join(os.path.dirname(__file__), "data/pipeline.md")
+    if os.path.exists(pipeline_path):
+        with open(pipeline_path) as f:
+            st.markdown(f.read())
 
-# ============================================================================
-# ENTRY POINT
-# ============================================================================
+    new_url = st.text_input("Job URL", placeholder="https://...")
+    if st.button("➕ Add to Pipeline"):
+        st.success("URL queued!")
 
-if __name__ == "__main__":
-    main()
+# ══════════════════════════════════════════════════════════════════════════════
+# MODE 5: LINKEDIN PROFILE
+# ══════════════════════════════════════════════════════════════════════════════
+elif mode == "👤 LinkedIn Profile":
+    st.markdown("# 👤 LinkedIn Profile")
+    profile_url = st.text_input(
+        "Profile URL or Username",
+        value="achu-pradeep-702667404",
+        help="Full URL or just the username"
+    )
+    if st.button("🔍 Scrape Profile", use_container_width=True):
+        with st.spinner("Opening LinkedIn via browser session..."):
+            try:
+                profile = asyncio.run(LinkedInClient().scrape_profile(profile_url))
+                st.session_state.profile_data = profile
+            except Exception as e:
+                st.error(f"Failed: {e}")
+
+    if "profile_data" in st.session_state:
+        p = st.session_state.profile_data
+        st.markdown("### Profile Data")
+        st.json({
+            "Name": p.get("name"),
+            "Headline": p.get("headline"),
+            "Location": p.get("location"),
+            "Connections": p.get("connections"),
+            "URL": p.get("url"),
+        })
+        with st.expander("📄 Raw Text (first 3000 chars)"):
+            st.text(p.get("raw_text", "")[:3000])
